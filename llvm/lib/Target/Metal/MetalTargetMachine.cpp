@@ -16,6 +16,7 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/GVN.h"
+#include "llvm/IR/IRPrintingPasses.h"
 
 using namespace llvm;
 
@@ -59,9 +60,6 @@ bool MetalTargetMachine::addPassesToEmitFile(PassManagerBase &PM,
                                              CodeGenFileType FileType,
                                              bool DisableVerify,
                                              MachineModuleInfoWrapperPass *MMI) {
-  if (FileType != CodeGenFileType::CGFT_AssemblyFile)
-    return true;
-
   // we don't want to call addPassesToGenerateCode since we're not actually generating code,
   // so manually call the necessary passes that would otherwise prepare the IR.
   TargetPassConfig *PassConfig = createPassConfig(PM);
@@ -70,7 +68,10 @@ bool MetalTargetMachine::addPassesToEmitFile(PassManagerBase &PM,
   PM.add(PassConfig);
   PassConfig->addIRPasses();
 
-  PM.add(createMetalLibWriterPass(Out));
+  if (FileType == CodeGenFileType::CGFT_AssemblyFile)
+    PM.add(createPrintModulePass(Out, ""));
+  else
+    PM.add(createMetalLibWriterPass(Out));
 
   return false;
 }
