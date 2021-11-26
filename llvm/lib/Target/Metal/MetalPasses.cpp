@@ -81,148 +81,6 @@ using namespace llvm;
 #define DBG(x) x
 #endif
 
-//////////////////////////////////////////
-// blatantly copied/transplanted from SROA
-namespace {
-/// \brief A custom IRBuilder inserter which prefixes all names, but only in
-/// Assert builds.
-class IRBuilderPrefixedInserter : public IRBuilderDefaultInserter {
-  std::string Prefix;
-  const Twine getNameWithPrefix(const Twine &Name) const {
-    return Name.isTriviallyEmpty() ? Name : Prefix + Name;
-  }
-
-public:
-  void SetNamePrefix(const Twine &P) { Prefix = P.str(); }
-
-protected:
-  void InsertHelper(Instruction *I, const Twine &Name, BasicBlock *BB,
-                    BasicBlock::iterator InsertPt) const override {
-    IRBuilderDefaultInserter::InsertHelper(I, getNameWithPrefix(Name), BB,
-                                           InsertPt);
-  }
-};
-
-/// \brief Provide a typedef for IRBuilder that drops names in release builds.
-using IRBuilderTy = llvm::IRBuilder<ConstantFolder, IRBuilderPrefixedInserter>;
-}
-
-namespace {
-  /// \brief Generic recursive split emission class.
-  template <typename Derived>
-  class OpSplitter {
-  protected:
-    /// The builder used to form new instructions.
-    IRBuilderTy IRB;
-    /// The indices which to be used with insert- or extractvalue to select the
-    /// appropriate value within the aggregate.
-    SmallVector<unsigned, 4> Indices;
-    /// The indices to a GEP instruction which will move Ptr to the correct slot
-    /// within the aggregate.
-    SmallVector<Value *, 4> GEPIndices;
-    /// The base pointer of the original op, used as a base for GEPing the
-    /// split operations.
-    Value *Ptr;
-
-    /// Initialize the splitter with an insertion point, Ptr and start with a
-    /// single zero GEP index.
-    OpSplitter(Instruction *InsertionPoint, Value *Ptr)
-      : IRB(InsertionPoint), GEPIndices(1, IRB.getInt32(0)), Ptr(Ptr) {}
-
-  public:
-    /// \brief Generic recursive split emission routine.
-    ///
-    /// This method recursively splits an aggregate op (load or store) into
-    /// scalar or vector ops. It splits recursively until it hits a single value
-    /// and emits that single value operation via the template argument.
-    ///
-    /// The logic of this routine relies on GEPs and insertvalue and
-    /// extractvalue all operating with the same fundamental index list, merely
-    /// formatted differently (GEPs need actual values).
-    ///
-    /// \param Ty  The type being split recursively into smaller ops.
-    /// \param Agg The aggregate value being built up or stored, depending on
-    /// whether this is splitting a load or a store respectively.
-    void emitSplitOps(Type *Ty, Value *&Agg, const Twine &Name) {
-      if (Ty->isSingleValueType())
-        return static_cast<Derived *>(this)->emitFunc(Ty, Agg, Name);
-
-      if (ArrayType *ATy = dyn_cast<ArrayType>(Ty)) {
-        unsigned OldSize = Indices.size();
-        (void)OldSize;
-        for (unsigned Idx = 0, Size = ATy->getNumElements(); Idx != Size;
-             ++Idx) {
-          assert(Indices.size() == OldSize && "Did not return to the old size");
-          Indices.push_back(Idx);
-          GEPIndices.push_back(IRB.getInt32(Idx));
-          emitSplitOps(ATy->getElementType(), Agg, Name + "." + Twine(Idx));
-          GEPIndices.pop_back();
-          Indices.pop_back();
-        }
-        return;
-      }
-
-      if (StructType *STy = dyn_cast<StructType>(Ty)) {
-        unsigned OldSize = Indices.size();
-        (void)OldSize;
-        for (unsigned Idx = 0, Size = STy->getNumElements(); Idx != Size;
-             ++Idx) {
-          assert(Indices.size() == OldSize && "Did not return to the old size");
-          Indices.push_back(Idx);
-          GEPIndices.push_back(IRB.getInt32(Idx));
-          emitSplitOps(STy->getElementType(Idx), Agg, Name + "." + Twine(Idx));
-          GEPIndices.pop_back();
-          Indices.pop_back();
-        }
-        return;
-      }
-
-      llvm_unreachable("Only arrays and structs are aggregate loadable types");
-    }
-  };
-
-  struct LoadOpSplitter : public OpSplitter<LoadOpSplitter> {
-    LoadOpSplitter(Instruction *InsertionPoint, Value *Ptr)
-      : OpSplitter<LoadOpSplitter>(InsertionPoint, Ptr) {}
-
-    /// Emit a leaf load of a single value. This is called at the leaves of the
-    /// recursive emission to actually load values.
-    void emitFunc(Type *Ty, Value *&Agg, const Twine &Name) {
-      assert(Ty->isSingleValueType());
-      // Load the single value and insert it using the indices.
-      auto elem_type = Ptr->getType()->getScalarType()->getPointerElementType();
-      Value *GEP = IRB.CreateInBoundsGEP(elem_type, Ptr, GEPIndices, Name + ".gep");
-      Value *Load = IRB.CreateLoad(elem_type, GEP, Name + ".load");
-      Agg = IRB.CreateInsertValue(Agg, Load, Indices, Name + ".insert");
-      DBG(dbgs() << "          to: " << *Load << "\n");
-    }
-  };
-
-  struct StoreOpSplitter : public OpSplitter<StoreOpSplitter> {
-    StoreOpSplitter(Instruction *InsertionPoint, Value *Ptr)
-      : OpSplitter<StoreOpSplitter>(InsertionPoint, Ptr) {}
-
-    /// Emit a leaf store of a single value. This is called at the leaves of the
-    /// recursive emission to actually produce stores.
-    void emitFunc(Type *Ty, Value *&Agg, const Twine &Name) {
-      assert(Ty->isSingleValueType());
-      // Extract the single value and store it using the indices.
-      //
-      // The gep and extractvalue values are factored out of the CreateStore
-      // call to make the output independent of the argument evaluation order.
-      Value *ExtractValue =
-          IRB.CreateExtractValue(Agg, Indices, Name + ".extract");
-      Value *InBoundsGEP =
-          IRB.CreateInBoundsGEP(nullptr, Ptr, GEPIndices, Name + ".gep");
-      Value *Store = IRB.CreateStore(ExtractValue, InBoundsGEP);
-      (void)Store;
-      DBG(dbgs() << "          to: " << *Store << "\n");
-    }
-  };
-
-}
-//////////////////////////////////////////
-
 namespace {
 	// MetalFinal
 	struct MetalFinal : public FunctionPass, InstVisitor<MetalFinal> {
@@ -235,7 +93,6 @@ namespace {
 		Module* M { nullptr };
 		LLVMContext* ctx { nullptr };
 		Function* func { nullptr };
-		Instruction* alloca_insert { nullptr };
 		bool was_modified { false };
 		bool is_kernel_func { false };
 
@@ -322,34 +179,6 @@ namespace {
 		bool runOnFunction(Function &F) override {
 			// exit if empty function
 			if(F.empty()) return false;
-
-			//
-			M = F.getParent();
-			ctx = &M->getContext();
-			func = &F;
-			builder = std::make_shared<llvm::IRBuilder<>>(*ctx);
-
-			for(auto& instr : F.getEntryBlock().getInstList()) {
-				if(!isa<AllocaInst>(instr)) {
-					alloca_insert = &instr;
-					break;
-				}
-			}
-
-			const auto get_arg_by_idx = [&F](const int32_t rev_idx) -> llvm::Argument* {
-				auto arg_iter = F.arg_end();
-				std::advance(arg_iter, rev_idx);
-				return &*arg_iter;
-			};
-
-			// check for sub-group support
-			const auto triple = llvm::Triple(M->getTargetTriple());
-			bool has_sub_group_support = false;
-			if (triple.getArch() == Triple::ArchType::air64) {
-				if (triple.getOS() == Triple::OSType::MacOSX) {
-					has_sub_group_support = true;
-				}
-			}
 
 			// visit everything in this function
 			was_modified = false; // reset every time
@@ -738,20 +567,9 @@ namespace {
 			ctx = &M->getContext();
 
 			// * strip metal calling convention from all functions and their users (replace it with C CC)
-			// * kill all functions named floor.*
 			bool module_modified = false;
 			for(auto func_iter = Mod.begin(); func_iter != Mod.end();) {
 				auto& func = *func_iter;
-				if(func.getName().startswith("floor.")) {
-					if(func.getNumUses() != 0) {
-						errs() << func.getName() << " should not have any uses at this point!\n";
-					}
-					++func_iter; // inc before erase
-					func.eraseFromParent();
-					module_modified = true;
-					continue;
-				}
-
 				if(func.getCallingConv() != CallingConv::C) {
 					func.setCallingConv(CallingConv::C);
 					for(auto user : func.users()) {
