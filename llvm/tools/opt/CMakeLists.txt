@@ -7,7 +7,6 @@ set(LLVM_LINK_COMPONENTS
   Analysis
   AsmParser
   BitWriter
-  BitWriter50
   CodeGen
   Core
   Coroutines

@@ -16,18 +16,9 @@ namespace llvm {
 
 //===----------------------------------------------------------------------===//
 //
-// MetalFirst - This pass fixes Metal/AIR issues.
-//
-FunctionPass *createMetalFirstPass(const bool enable_intel_workarounds = false,
-                                   const bool enable_nvidia_workarounds = false);
-void initializeMetalFirstPass(PassRegistry&);
-
-//===----------------------------------------------------------------------===//
-//
 // MetalFinal - This pass fixes Metal/AIR issues.
 //
-FunctionPass *createMetalFinalPass(const bool enable_intel_workarounds = false,
-                                   const bool enable_nvidia_workarounds = false);
+FunctionPass *createMetalFinalPass();
 void initializeMetalFinalPass(PassRegistry&);
 
 //===----------------------------------------------------------------------===//
