@@ -13,22 +13,12 @@
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Pass.h"
 #include "llvm/Transforms/Utils/Cloning.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/SHA256.h"
 
 #include <unordered_map>
 
 using namespace llvm;
 using namespace std;
-
-extern "C" void LLVMInitializeMetalTarget() {
-  // Register the target.
-  RegisterTargetMachine<MetalTargetMachine> X(getTheMetalTarget());
-
-  PassRegistry *PR = PassRegistry::getPassRegistry();
-  initializeMetalFinalPass(*PR);
-  initializeMetalFinalModuleCleanupPass(*PR);
-}
 
 namespace {
 class WriteMetalLibPass : public ModulePass {

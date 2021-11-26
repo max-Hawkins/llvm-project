@@ -17,8 +17,18 @@
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/GVN.h"
 #include "llvm/IR/IRPrintingPasses.h"
+#include "llvm/Support/TargetRegistry.h"
 
 using namespace llvm;
+
+extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeMetalTarget() {
+  // Register the target.
+  RegisterTargetMachine<MetalTargetMachine> X(getTheMetalTarget());
+
+  PassRegistry *PR = PassRegistry::getPassRegistry();
+  initializeMetalFinalPass(*PR);
+  initializeMetalFinalModuleCleanupPass(*PR);
+}
 
 namespace {
 /// Pass Configuration Options.
