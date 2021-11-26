@@ -44,9 +44,6 @@ class MetalTargetMachine : public LLVMTargetMachine {
   std::unique_ptr<TargetLoweringObjectFile> TLOF;
 
 public:
-  bool EnableMetalIntelWorkarounds;
-  bool EnableMetalNvidiaWorkarounds;
-
   MetalTargetMachine(const Target &T, const Triple &TT, StringRef CPU, StringRef FS,
                  const TargetOptions &Options, Optional<Reloc::Model> RM,
                  Optional<CodeModel::Model> CM, CodeGenOpt::Level OL,
@@ -56,8 +53,6 @@ public:
                           CM.hasValue() ? CM.getValue() : CodeModel::Small, OL),
         SubtargetInfo(*this, TT, CPU,"", FS),
         TLOF(std::make_unique<MetalTargetObjectFile>()) {
-        EnableMetalIntelWorkarounds = false;
-        EnableMetalNvidiaWorkarounds = false;
       }
 
   /// Add passes to the specified pass manager to get the specified file

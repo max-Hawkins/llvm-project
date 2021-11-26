@@ -51,7 +51,7 @@ TargetPassConfig *MetalTargetMachine::createPassConfig(PassManagerBase &PM) {
 
 void MetalPassConfig::addIRPasses() {
   // run backend final passes at the very end, no IR should change after this point!
-  addPass(createMetalFinalPass(getMetalTargetMachine().EnableMetalIntelWorkarounds, getMetalTargetMachine().EnableMetalNvidiaWorkarounds));
+  addPass(createMetalFinalPass());
   addPass(createMetalFinalModuleCleanupPass());
 
   // cleanup

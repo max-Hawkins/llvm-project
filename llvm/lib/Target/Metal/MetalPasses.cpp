@@ -224,39 +224,11 @@ namespace {
 //////////////////////////////////////////
 
 namespace {
-	static bool metal_load_splitter(LoadInst& LI,
-									const bool is_kernel,
-									const bool nvidia_workarounds) {
-		if(!is_kernel) return false;
-		if(is_kernel && !(nvidia_workarounds && LI.getType()->isArrayTy())) return false;
-
-		LoadOpSplitter Splitter(&LI, LI.getPointerOperand());
-		Value *V = UndefValue::get(LI.getType());
-		Splitter.emitSplitOps(LI.getType(), V, LI.getName() + ".mtlld");
-		LI.replaceAllUsesWith(V);
-		LI.eraseFromParent();
-		return true;
-	}
-
-	static bool metal_store_splitter(StoreInst& SI,
-									 const bool is_kernel,
-									 const bool nvidia_workarounds) {
-		if(!is_kernel) return false;
-		if(is_kernel && !(nvidia_workarounds && SI.getType()->isArrayTy())) return false;
-
-		Value *V = SI.getValueOperand();
-		StoreOpSplitter Splitter(&SI, SI.getPointerOperand());
-		Splitter.emitSplitOps(V->getType(), V, V->getName() + ".mtlst");
-		SI.eraseFromParent();
-		return true;
-	}
-
 	// MetalFinal
 	struct MetalFinal : public FunctionPass, InstVisitor<MetalFinal> {
 		friend class InstVisitor<MetalFinal>;
 
 		static char ID; // Pass identification, replacement for typeid
-		const bool enable_intel_workarounds, enable_nvidia_workarounds;
 
 		std::shared_ptr<llvm::IRBuilder<>> builder;
 
@@ -267,26 +239,7 @@ namespace {
 		bool was_modified { false };
 		bool is_kernel_func { false };
 
-		// added kernel function args
-		Argument* global_id { nullptr };
-		Argument* global_size { nullptr };
-		Argument* local_id { nullptr };
-		Argument* local_size { nullptr };
-		Argument* group_id { nullptr };
-		Argument* group_size { nullptr };
-		Argument* sub_group_id { nullptr };
-		Argument* sub_group_local_id { nullptr };
-		Argument* sub_group_size { nullptr };
-		Argument* num_sub_groups { nullptr };
-
-		// any function args
-		Argument* soft_printf { nullptr };
-
-		MetalFinal(const bool enable_intel_workarounds_ = false,
-				   const bool enable_nvidia_workarounds_ = false) :
-		FunctionPass(ID),
-		enable_intel_workarounds(enable_intel_workarounds_),
-		enable_nvidia_workarounds(enable_nvidia_workarounds_) {
+		MetalFinal() : FunctionPass(ID) {
 			initializeMetalFinalPass(*PassRegistry::getPassRegistry());
 		}
 
@@ -338,16 +291,6 @@ namespace {
 
 			DBG(errs() << "converting: " << *from_type << " (" << (from_signed ? "signed" : "unsigned") << ") -> " << *to_type << "(" << (to_signed ? "signed" : "unsigned") << ")\n";)
 
-			// for intel gpus any conversion from/to float from/to i8 or i16 needs to go through a i32 first
-			if(enable_intel_workarounds && from_iter->second[0] == 'f') {
-				if(to_iter->first == llvm::Type::getInt8Ty(*ctx) ||
-				   to_iter->first == llvm::Type::getInt16Ty(*ctx)) {
-					// convert to i32 first, then trunc from i32 to i8/i16
-					const auto to_i32_cast = call_conversion_func<cast_op>(from, llvm::Type::getInt32Ty(*ctx));
-					return builder->CreateTrunc(to_i32_cast, to_iter->first);
-				}
-			}
-
 			// air.convert.<to_type>.<from_type>
 			std::string func_name = "air.convert.";
 
@@ -375,11 +318,6 @@ namespace {
 		llvm::Value* call_conversion_func(llvm::Value* from, llvm::Type*) {
 			return from;
 		}
-
-		enum METAL_KERNEL_ARG_REV_IDX : int32_t {
-			METAL_KERNEL_ARG_COUNT = 6,
-			METAL_KERNEL_SUB_GROUPS_ARG_COUNT = 10,
-		};
 
 		bool runOnFunction(Function &F) override {
 			// exit if empty function
@@ -411,63 +349,6 @@ namespace {
 				if (triple.getOS() == Triple::OSType::MacOSX) {
 					has_sub_group_support = true;
 				}
-			}
-
-			// check for soft-printf
-			bool has_soft_printf = false;
-			if (auto soft_printf_meta = M->getNamedMetadata("floor.soft_printf")) {
-				has_soft_printf = true;
-			}
-
-			// get args if this is a kernel function
-			is_kernel_func = F.getCallingConv() == CallingConv::METAL_KERNEL;
-			if(is_kernel_func) {
-				if (F.arg_size() >= (has_sub_group_support ? METAL_KERNEL_SUB_GROUPS_ARG_COUNT : METAL_KERNEL_ARG_COUNT) + (has_soft_printf ? 1 : 0)) {
-					int32_t rev_idx = -1;
-					if (has_sub_group_support) {
-						num_sub_groups = get_arg_by_idx(rev_idx--);
-						sub_group_size = get_arg_by_idx(rev_idx--);
-						sub_group_local_id = get_arg_by_idx(rev_idx--);
-						sub_group_id = get_arg_by_idx(rev_idx--);
-					}
-					group_size = get_arg_by_idx(rev_idx--);
-					group_id = get_arg_by_idx(rev_idx--);
-					local_size = get_arg_by_idx(rev_idx--);
-					local_id = get_arg_by_idx(rev_idx--);
-					global_size = get_arg_by_idx(rev_idx--);
-					global_id = get_arg_by_idx(rev_idx--);
-					if (has_soft_printf) {
-						soft_printf = get_arg_by_idx(rev_idx--);
-					}
-				} else {
-					errs() << "invalid kernel function (" << F.getName() << ") argument count: " << F.arg_size() << "\n";
-					global_id = nullptr;
-					global_size = nullptr;
-					local_id = nullptr;
-					local_size = nullptr;
-					group_id = nullptr;
-					group_size = nullptr;
-					sub_group_id = nullptr;
-					sub_group_local_id = nullptr;
-					sub_group_size = nullptr;
-					num_sub_groups = nullptr;
-					soft_printf = nullptr;
-				}
-			}
-
-			// update function signature / param list
-			if(is_kernel_func) {
-				std::vector<Type*> param_types;
-				for(auto& arg : F.args()) {
-					param_types.push_back(arg.getType());
-				}
-				auto new_func_type = FunctionType::get(F.getReturnType(), param_types, false);
-				F.mutateType(PointerType::get(new_func_type, 0));
-				F.mutateFunctionType(new_func_type);
-
-				// always remove "norecurse" and "min-legal-vector-width"
-				F.removeFnAttr(Attribute::NoRecurse);
-				F.removeFnAttr("min-legal-vector-width");
 			}
 
 			// visit everything in this function
@@ -705,99 +586,6 @@ namespace {
 			}
 		}
 
-		//
-		void visitCallInst(CallInst &I) {
-			// if this isn't a kernel function we don't need to do anything here (yet)
-			if(!is_kernel_func) return;
-
-			const auto func = I.getCalledFunction();
-			if(!func) return;
-			const auto func_name = func->getName();
-			if(!func_name.startswith("floor.")) return;
-
-			builder->SetInsertPoint(&I);
-
-			// figure out which one we need
-			Argument* id;
-			bool get_from_vector = false;
-			if(func_name == "floor.get_global_id.i32") {
-				id = global_id;
-				get_from_vector = true;
-			}
-			else if(func_name == "floor.get_global_size.i32") {
-				id = global_size;
-				get_from_vector = true;
-			}
-			else if(func_name == "floor.get_local_id.i32") {
-				id = local_id;
-				get_from_vector = true;
-			}
-			else if(func_name == "floor.get_local_size.i32") {
-				id = local_size;
-				get_from_vector = true;
-			}
-			else if(func_name == "floor.get_group_id.i32") {
-				id = group_id;
-				get_from_vector = true;
-			}
-			else if(func_name == "floor.get_group_size.i32") {
-				id = group_size;
-				get_from_vector = true;
-			}
-			else if(func_name == "floor.get_sub_group_id.i32") {
-				id = sub_group_id;
-			}
-			else if(func_name == "floor.get_sub_group_local_id.i32") {
-				id = sub_group_local_id;
-			}
-			else if(func_name == "floor.get_sub_group_size.i32") {
-				id = sub_group_size;
-			}
-			else if(func_name == "floor.get_num_sub_groups.i32") {
-				id = num_sub_groups;
-			}
-			else if(func_name == "floor.get_work_dim.i32") {
-				if(group_size == nullptr) {
-					DBG(printf("failed to get group_size arg, probably not in a kernel function?\n"); fflush(stdout);)
-					return;
-				}
-
-				// special case
-				// => group_size.z == 1 ? (group_size.y == 1 ? 1 : 2) : 3
-				const auto size_z = builder->CreateExtractElement(group_size, builder->getInt32(2));
-				const auto size_y = builder->CreateExtractElement(group_size, builder->getInt32(1));
-				const auto cmp_z = builder->CreateICmp(ICmpInst::ICMP_EQ, size_z, builder->getInt32(1));
-				const auto cmp_y = builder->CreateICmp(ICmpInst::ICMP_EQ, size_y, builder->getInt32(1));
-				const auto sel_x_or_y = builder->CreateSelect(cmp_y, builder->getInt32(1), builder->getInt32(2));
-				const auto sel_xy_or_z = builder->CreateSelect(cmp_z, sel_x_or_y, builder->getInt32(3));
-				I.replaceAllUsesWith(sel_xy_or_z);
-				I.eraseFromParent();
-				return;
-			}
-			if(func_name == "floor.builtin.get_printf_buffer") {
-				if(soft_printf == nullptr) {
-					DBG(printf("failed to get printf_buffer arg, probably not in a kernel function?\n"); fflush(stdout);)
-					return;
-				}
-
-				// special case
-				I.replaceAllUsesWith(soft_printf);
-				I.eraseFromParent();
-				return;
-			}
-			// unknown -> ignore for now
-			else return;
-
-			if(id == nullptr) {
-				DBG(printf("failed to get id arg, probably not in a kernel function?\n"); fflush(stdout);)
-				return;
-			}
-
-			// replace call with vector load / elem extraction from the appropriate vector
-			I.replaceAllUsesWith(get_from_vector ? builder->CreateExtractElement(id, I.getOperand(0)) : id);
-			I.eraseFromParent();
-		}
-
 		// like SPIR, Metal only supports scalar conversion ops ->
 		// * scalarize source vector
 		// * call conversion op for each scalar
@@ -929,148 +717,6 @@ namespace {
 				was_modified = true;
 			}
 		}
-
-		void visitLoadInst(LoadInst &LI) {
-			was_modified = metal_load_splitter(LI, is_kernel_func, enable_nvidia_workarounds);
-		}
-
-		void visitStoreInst(StoreInst &SI) {
-			was_modified = metal_store_splitter(SI, is_kernel_func, enable_nvidia_workarounds);
-		}
-
-		void visitAllocaInst(AllocaInst &AI) {
-			if(!enable_intel_workarounds) return;
-			DBG(errs() << "alloca: " << AI << ", " << *AI.getType() << "\n";)
-
-			BasicAAResult BAR(createLegacyPMBasicAAResult(*this, *func));
-			AAResults AA(createLegacyPMAAResults(*this, *func, BAR));
-
-			// recursively find all users of this alloca + store all select and phi instructions that select/choose based on the alloca pointer
-			std::vector<Instruction*> users;
-			std::unordered_set<Instruction*> visited;
-			const std::function<void(Instruction&)> collect_users = [&users, &collect_users, &visited, &AI, &AA](Instruction& I) {
-				for(auto user : I.users()) {
-					auto instr = cast<Instruction>(user);
-					const auto has_visited = visited.insert(instr);
-					if(!has_visited.second) continue;
-
-					// TODO: ideally, we want to track all GEPs and bitcasts to/of the alloca and only add select/phi instructions that
-					//       either use these or directly use the alloca (and not all pointers) - for now, AA will do
-					if(SelectInst* SI = dyn_cast<SelectInst>(user)) {
-						DBG(errs() << ">> select: " << *SI << "\n";)
-						DBG(errs() << "cond: " << *SI->getCondition() << "\n";)
-						DBG(errs() << "ops: " << *SI->getTrueValue() << ", " << *SI->getFalseValue() << "\n";)
-
-						// skip immediately if not a pointer type
-						if(SI->getTrueValue()->getType()->isPointerTy() /* false val has the same type */) {
-							// check if either true or false alias with our alloca
-							const auto aa_res_true = AA.alias(SI->getTrueValue(), &AI);
-							const auto aa_res_false = AA.alias(SI->getFalseValue(), &AI);
-							DBG(errs() << "aa: " << aa_res_true << ", " << aa_res_false << "\n";)
-							if(aa_res_true != AliasResult::NoAlias ||
-							   aa_res_false != AliasResult::NoAlias) {
-								// if so, add this select
-								users.push_back(SI);
-							}
-						}
-					}
-					else if(PHINode* PHI = dyn_cast<PHINode>(user)) {
-						DBG(errs() << ">> phi: " << *PHI << "\n";)
-						DBG(errs() << "type: " << *PHI->getType() << "\n";)
-
-						// skip immediately if not a pointer type
-						if(PHI->getType()->isPointerTy()) {
-							// check if it aliases with our alloca
-							const auto aa_res = AA.alias(PHI, &AI);
-							DBG(errs() << "aa: " << aa_res << "\n";)
-							if(aa_res != AliasResult::NoAlias) {
-								// if so, add this phi node
-								users.push_back(PHI);
-							}
-						}
-					}
-					collect_users(*instr);
-				}
-			};
-			collect_users(AI);
-
-			DBG({
-				errs() << "####### users ##\n";
-				for(const auto& user : users) {
-					errs() << "user: " << *user << "\n";
-				}
-				errs() << "\n";
-			})
-
-			// select replacement strategy:
-			// * create a tmp alloca that will later hold the selected data
-			// * replace the select with two branches (true/false)
-			// * depending on the select condition, branch to either true/false branch
-			// * inside these branches, store the corresponding true/false value into our tmp alloca, then branch back to after the select
-			// * remove the select
-			const auto select_replace = [&](SelectInst* SI) {
-				builder->SetInsertPoint(alloca_insert);
-				auto tmp_alloca = builder->CreateAlloca(AI.getType()->getPointerElementType(), nullptr, "sel_tmp");
-				tmp_alloca->setAlignment(AI.getAlign());
-
-				// create our branch condition and true/false blocks that will replace the select
-				auto bb_true = BasicBlock::Create(*ctx, "sel.true", func);
-				auto bb_false = BasicBlock::Create(*ctx, "sel.false", func);
-				builder->SetInsertPoint(SI);
-				builder->CreateCondBr(SI->getCondition(), bb_true, bb_false);
-
-				// split block before the select instruction so that we can branch back to it later
-				auto bb_start = SI->getParent();
-				auto bb_end = SI->getParent()->splitBasicBlock(SI);
-				// remove automatically inserted branch instruction from parent, since we already have a branch instruction
-				bb_start->getTerminator()->eraseFromParent();
-
-				// create true/false branches that will copy the true/false data to our tmp alloca accordingly
-				// -> true branch
-				builder->SetInsertPoint(bb_true);
-				builder->CreateStore(builder->CreateLoad(SI->getTrueValue()->getType()->getPointerElementType(), SI->getTrueValue()), tmp_alloca);
-				builder->CreateBr(bb_end);
-
-				// -> false branch
-				builder->SetInsertPoint(bb_false);
-				builder->CreateStore(builder->CreateLoad(SI->getFalseValue()->getType()->getPointerElementType(), SI->getFalseValue()), tmp_alloca);
-				builder->CreateBr(bb_end);
-
-				// cleanup, replace select instruction with our new alloca
-				SI->replaceAllUsesWith(tmp_alloca);
-				SI->eraseFromParent();
-			};
-
-			// phi replacement strategy:
-			// * create a tmp alloca (pointer), this will be used to store all phi pointers
-			// * iterate over all incoming values/pointers, then create a store of their pointer to the tmp pointer in their originating block
-			// * create a load from the tmp alloca and replace all uses of the phi node with it
-			// NOTE: loads and stores are volatile, so that no optimization can do any re-phi-ification(tm) later on
-			const auto phi_replace = [&](PHINode* PHI) {
-				auto phi_tmp_alloca = new AllocaInst(PHI->getType(), 0, nullptr, PHI->getName() + ".tmp", alloca_insert);
-
-				for(uint32_t i = 0; i < PHI->getNumIncomingValues(); ++i) {
-					auto origin = PHI->getIncomingBlock(i);
-					new StoreInst(PHI->getIncomingValue(i), phi_tmp_alloca, true, origin->getTerminator());
-				}
-
-				auto load_repl = new LoadInst(PHI->getType(), phi_tmp_alloca, PHI->getName() + ".repl", true,
-											  PHI->getParent()->getFirstNonPHI());
-				PHI->replaceAllUsesWith(load_repl);
-				PHI->eraseFromParent();
-			};
-
-			for(const auto& user : users) {
-				if(SelectInst* SI = dyn_cast<SelectInst>(user)) {
-					select_replace(SI);
-				}
-				else if(PHINode* PHI = dyn_cast<PHINode>(user)) {
-					phi_replace(PHI);
-				}
-			}
-			was_modified = !users.empty();
-		}
-
 	};
 
 	// MetalFinalModuleCleanup:
@@ -1125,9 +771,8 @@ namespace {
 }
 
 char MetalFinal::ID = 0;
-FunctionPass *llvm::createMetalFinalPass(const bool enable_intel_workarounds,
-										 const bool enable_nvidia_workarounds) {
-	return new MetalFinal(enable_intel_workarounds, enable_nvidia_workarounds);
+FunctionPass *llvm::createMetalFinalPass() {
+	return new MetalFinal();
 }
 INITIALIZE_PASS_BEGIN(MetalFinal, "MetalFinal", "MetalFinal Pass", false, false)
 INITIALIZE_PASS_END(MetalFinal, "MetalFinal", "MetalFinal Pass", false, false)
