@@ -241,6 +241,9 @@ namespace {
 					I.eraseFromParent();
 					was_modified = true;
 					break;
+				case Intrinsic::dbg_declare:
+				case Intrinsic::dbg_value:
+				case Intrinsic::dbg_label:
 				case Intrinsic::memcpy:
 				case Intrinsic::memset:
 				case Intrinsic::memmove:
