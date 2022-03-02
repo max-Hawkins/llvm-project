@@ -32,7 +32,6 @@ entry:
   ret i32 undef
 }
 
-
 declare float @llvm.powi.f32.i32(float, i32)
 define void @fn2(i32* %a, i32* %b, float* %c) {
 ; CHECK-LABEL: @fn2(

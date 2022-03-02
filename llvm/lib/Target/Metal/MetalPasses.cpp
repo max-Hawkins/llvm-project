@@ -241,9 +241,12 @@ namespace {
 					I.eraseFromParent();
 					was_modified = true;
 					break;
+<<<<<<< HEAD
 				case Intrinsic::dbg_declare:
 				case Intrinsic::dbg_value:
 				case Intrinsic::dbg_label:
+=======
+>>>>>>> 415bbcd925ab8b7f39c67b20287eca6cdfc47336
 				case Intrinsic::memcpy:
 				case Intrinsic::memset:
 				case Intrinsic::memmove:

@@ -898,6 +898,7 @@ struct TempMDNodeDeleter {
 class MDNode : public Metadata {
   friend class ReplaceableMetadataImpl;
   friend class LLVMContextImpl;
+  friend class DIArgList;
 
   unsigned NumOperands;
   unsigned NumUnresolved;

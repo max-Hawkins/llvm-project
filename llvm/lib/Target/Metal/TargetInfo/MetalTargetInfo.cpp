@@ -21,7 +21,11 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeMetalTargetInfo() {
   RegisterTarget<Triple::air64> X(getTheMetalTarget(), "metal", "Metal", "Metal");
 }
 
+<<<<<<< HEAD
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeMetalTargetMC() {}
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeMetalAsmPrinter() {}
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeMetalAsmParser() {}
 
+=======
+extern "C" void LLVMInitializeMetalTargetMC() {}
+>>>>>>> 415bbcd925ab8b7f39c67b20287eca6cdfc47336
